@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>タイムカード</title>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js"></script>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --line: #334155; --text: #f1f5f9; --sub: #94a3b8;
+    --in: #16a34a; --out: #ea580c; --ok: #22c55e; --ng: #ef4444; --accent: #3b82f6;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    -webkit-user-select: none; user-select: none; }
+  input { -webkit-user-select: text; user-select: text; }
+  .app { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 100%; }
+  .left { flex: 1 1 420px; display: flex; flex-direction: column; gap: 12px; }
+  .right { flex: 1 1 320px; display: flex; flex-direction: column; gap: 12px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; }
+  #clock { font-size: 56px; font-weight: 700; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
+  #date { font-size: 20px; color: var(--sub); }
+  .gear { background: none; border: 1px solid var(--line); color: var(--sub); border-radius: 10px;
+    padding: 8px 14px; font-size: 16px; }
+  .cam { position: relative; background: #000; border-radius: 16px; overflow: hidden; aspect-ratio: 4 / 3; }
+  .cam video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
+  .cam .frame { position: absolute; inset: 12% 22%; border: 3px dashed rgba(255,255,255,.35); border-radius: 50%; pointer-events: none; }
+  #who { text-align: center; font-size: 30px; font-weight: 700; padding: 14px; border-radius: 14px;
+    background: var(--panel); min-height: 74px; }
+  #who.ok { background: #14532d; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .btns button { font-size: 40px; font-weight: 800; color: #fff; border: none; border-radius: 18px; padding: 34px 0; }
+  .btns button:disabled { opacity: .3; }
+  #btnIn { background: var(--in); } #btnOut { background: var(--out); }
+  .card { background: var(--panel); border-radius: 14px; padding: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 16px; color: var(--sub); font-weight: 600; }
+  .status { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 8px 12px; border-radius: 999px; background: var(--line); font-size: 16px; }
+  .chip.in { background: var(--in); } .chip.out { background: #475569; color: #cbd5e1; }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 18px; }
+  #log li { display: flex; gap: 14px; padding: 6px 2px; border-bottom: 1px solid var(--line); }
+  #log .t { font-variant-numeric: tabular-nums; color: var(--sub); }
+  .tag { padding: 0 8px; border-radius: 6px; font-size: 15px; }
+  .tag.出勤 { background: var(--in); } .tag.退勤 { background: var(--out); }
+  .empty { color: var(--sub); font-size: 15px; }
+
+  /* 結果表示 */
+  #toast { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.6); z-index: 20; }
+  #toast .box { background: #fff; color: #111; border-radius: 24px; padding: 40px 60px; text-align: center; min-width: 60%; }
+  #toast .big { font-size: 44px; font-weight: 800; }
+  #toast .small { font-size: 24px; margin-top: 10px; color: #444; }
+  #toast.ng .big { color: var(--ng); }
+
+  /* 読み込み中 */
+  #loading { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; z-index: 30; font-size: 22px; }
+  #loading .sub { font-size: 15px; color: var(--sub); max-width: 80%; text-align: center; }
+
+  /* 管理画面 */
+  #admin { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none; align-items: center; justify-content: center; z-index: 25; }
+  #admin .box { background: var(--panel); border-radius: 20px; padding: 24px; width: min(560px, 92vw); max-height: 90vh; overflow-y: auto; }
+  #admin h2 { margin: 0 0 16px; }
+  #admin input { width: 100%; font-size: 22px; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  #admin .row { display: flex; gap: 10px; margin-top: 12px; }
+  #admin button { font-size: 18px; padding: 12px 18px; border-radius: 10px; border: none; color: #fff; background: var(--accent); }
+  #admin button.gray { background: #475569; } #admin button.red { background: var(--ng); }
+  #admin .emp { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 20px; }
+  #admin .emp small { color: var(--sub); font-size: 14px; margin-left: 8px; }
+  #regMsg { margin-top: 12px; font-size: 18px; min-height: 26px; color: #fde68a; }
+  .progress { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; margin-top: 10px; }
+  .progress div { height: 100%; width: 0; background: var(--ok); transition: width .2s; }
+</style>
+</head>
+<body>
+<div id="loading"><div id="loadingText">準備しています…</div><div class="sub" id="loadingSub">初回は顔認識の部品を読み込むので少し時間がかかります</div></div>
+
+<div class="app">
+  <div class="left">
+    <header>
+      <div><div id="clock">--:--</div><div id="date"></div></div>
+      <button class="gear" onclick="openAdmin()">⚙ 管理</button>
+    </header>
+    <div class="cam"><video id="video" autoplay muted playsinline></video><div class="frame"></div></div>
+  </div>
+  <div class="right">
+    <div id="who">カメラに顔を向けてください</div>
+    <div class="btns">
+      <button id="btnIn" onclick="doPunch('出勤')" disabled>出勤</button>
+      <button id="btnOut" onclick="doPunch('退勤')" disabled>退勤</button>
+    </div>
+    <div class="card"><h3>今日の状況</h3><div class="status" id="status"></div></div>
+    <div class="card"><h3>今日の打刻</h3><ul id="log"></ul></div>
+  </div>
+</div>
+
+<div id="toast"><div class="box"><div class="big" id="toastBig"></div><div class="small" id="toastSmall"></div></div></div>
+
+<div id="admin"><div class="box">
+  <div id="pinArea">
+    <h2>管理用の番号</h2>
+    <input id="pin" type="password" inputmode="numeric" placeholder="番号を入力">
+    <div class="row"><button onclick="submitPin()">開く</button><button class="gray" onclick="closeAdmin()">閉じる</button></div>
+  </div>
+  <div id="manageArea" style="display:none">
+    <h2>顔の登録</h2>
+    <input id="regName" placeholder="名前（例：小倉）">
+    <div class="row"><button id="regBtn" onclick="startRegister()">顔を撮影して登録</button><button class="gray" onclick="closeAdmin()">閉じる</button></div>
+    <div class="progress"><div id="regBar"></div></div>
+    <div id="regMsg">カメラの正面で、少しずつ顔の向きを変えてください（5回撮影）</div>
+    <h2 style="margin-top:24px">登録済み</h2>
+    <div id="empList"></div>
+  </div>
+</div></div>
+
+<script>
+const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/';
+const THRESHOLD = 0.45;      // これより距離が小さければ本人とみなす（小さくするほど厳しい）
+const SHOTS = 5;             // 登録時の撮影回数
+
+let employees = [];          // {id, name, descriptors: [Float32Array]}
+let today = [];
+let current = null;          // 今カメラに映っている（確定した）社員
+let candidate = null, candidateCount = 0, missCount = 0;
+let paused = false, adminPin = null;
+const video = document.getElementById('video');
+const $ = id => document.getElementById(id);
+
+// ---------- サーバー呼び出し（Apps Script の記録用の入口へ。localhost ではダミー） ----------
+const API_URL = 'https://script.google.com/macros/s/AKfycbylhBqvc1wVFc9bh1agH-86LBQS3AvFRVd10iItqp7jprPivE3MfLHIw9sAAMM2ueQ35Q/exec';
+const USE_MOCK = location.hostname === 'localhost' || location.protocol === 'file:';
+const KEY_STORE = 'timecard_key';
+
+function getKey() { try { return localStorage.getItem(KEY_STORE) || ''; } catch (e) { return ''; } }
+function setKey(k) { try { k ? localStorage.setItem(KEY_STORE, k) : localStorage.removeItem(KEY_STORE); } catch (e) {} }
+
+async function server(fn, ...args) {
+  if (USE_MOCK) return mock[fn](...args);
+  const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ key: getKey(), fn, args }) });
+  const data = await res.json();
+  if (!data.ok) {
+    if (data.error === '合言葉が違います') setKey('');
+    throw new Error(data.error);
+  }
+  return data.result;
+}
+
+// 合言葉（最初に1回だけ入れる。iPadに記憶される）
+function askKey(message) {
+  return new Promise(resolve => {
+    $('loadingText').textContent = message || '合言葉を入れてください（最初の1回だけ）';
+    $('loadingSub').innerHTML = '<input id="keyInput" style="font-size:22px;padding:12px;border-radius:10px;width:min(420px,80vw)" autocapitalize="off" autocorrect="off">'
+      + '<div style="margin-top:12px"><button id="keyBtn" style="font-size:20px;padding:12px 28px;border-radius:10px;border:none;background:#3b82f6;color:#fff">決定</button></div>';
+    $('keyBtn').onclick = () => {
+      const k = $('keyInput').value.trim();
+      if (!k) return;
+      setKey(k);
+      $('loadingSub').textContent = '';
+      resolve();
+    };
+  });
+}
+const mock = (() => {
+  const load = k => JSON.parse(localStorage.getItem('tc_' + k) || '[]');
+  const save = (k, v) => localStorage.setItem('tc_' + k, JSON.stringify(v));
+  const hm = d => d.toTimeString().slice(0, 5);
+  const todayRecs = () => load('log').filter(r => new Date(r.ts).toDateString() === new Date().toDateString());
+  return {
+    getInitData: () => ({ employees: load('emp'), today: todayRecs() }),
+    checkPin: pin => pin === '1234',
+    registerEmployee(pin, name, desc) {
+      const e = load('emp'); const f = e.find(x => x.name === name);
+      if (f) f.descriptors = desc; else e.push({ id: String(e.length + 1), name, descriptors: desc });
+      save('emp', e); return e;
+    },
+    deleteEmployee(pin, id) { const e = load('emp').filter(x => x.id !== id); save('emp', e); return e; },
+    punch(id, type) {
+      const emp = load('emp').find(x => x.id === id); const now = new Date();
+      const l = load('log'); l.push({ id, name: emp.name, type, time: hm(now), ts: now.getTime() }); save('log', l);
+      return { ok: true, name: emp.name, type, time: hm(now), today: todayRecs() };
+    }
+  };
+})();
+
+// ---------- 起動 ----------
+async function init() {
+  setInterval(tick, 1000); tick();
+  try {
+    $('loadingText').textContent = 'カメラを起動しています…';
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+  } catch (e) {
+    return fatal('カメラを起動できませんでした', 'iPadの「設定 → Safari → カメラ」を「許可」にして、ページを開き直してください。（' + (e.message || e) + '）');
+  }
+  try {
+    $('loadingText').textContent = '顔認識の準備をしています…';
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+    ]);
+  } catch (e) {
+    return fatal('顔認識の部品を読み込めませんでした', 'インターネット接続を確認して、ページを開き直してください。（' + (e.message || e) + '）');
+  }
+  if (!USE_MOCK && !getKey()) await askKey();
+  for (;;) {
+    try {
+      $('loadingText').textContent = 'データを読み込んでいます…';
+      const d = await server('getInitData');
+      setEmployees(d.employees); setToday(d.today);
+      break;
+    } catch (e) {
+      if (!getKey() && !USE_MOCK) { await askKey('合言葉が違います。もう一度入れてください'); continue; }
+      return fatal('データを読み込めませんでした', String(e.message || e));
+    }
+  }
+  $('loading').style.display = 'none';
+  if (!employees.length) setWho('まず「⚙ 管理」から顔を登録してください', false);
+  loop();
+}
+
+function fatal(title, sub) {
+  $('loadingText').textContent = title;
+  $('loadingSub').textContent = sub;
+}
+
+function tick() {
+  const d = new Date();
+  $('clock').textContent = d.toTimeString().slice(0, 8);
+  $('date').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${'日月火水木金土'[d.getDay()]}）`;
+}
+
+// ---------- 顔の判定 ----------
+async function detect() {
+  return faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
+    .withFaceLandmarks().withFaceDescriptor();
+}
+
+function bestMatch(desc) {
+  let best = null;
+  for (const e of employees) {
+    for (const d of e.descriptors) {
+      const dist = faceapi.euclideanDistance(desc, d);
+      if (!best || dist < best.dist) best = { emp: e, dist };
+    }
+  }
+  return best;
+}
+
+async function loop() {
+  try {
+    if (!paused && video.readyState >= 2 && employees.length) {
+      const r = await detect();
+      if (!r) {
+        if (++missCount >= 2) { current = null; candidate = null; setWho('カメラに顔を向けてください', false); }
+      } else {
+        missCount = 0;
+        const m = bestMatch(r.descriptor);
+        if (m && m.dist < THRESHOLD) {
+          if (candidate && candidate.emp.id === m.emp.id) candidateCount++; else { candidate = m; candidateCount = 1; }
+          candidate.dist = m.dist;
+          if (candidateCount >= 2) { current = candidate; setWho(current.emp.name + ' さん', true); }
+        } else {
+          current = null; candidate = null;
+          setWho('登録されていない顔です', false);
+        }
+      }
+    }
+  } catch (e) { console.error(e); }
+  setTimeout(loop, 300);
+}
+
+function setWho(text, ok) {
+  $('who').textContent = text;
+  $('who').className = ok ? 'ok' : '';
+  $('btnIn').disabled = $('btnOut').disabled = !ok;
+}
+
+// ---------- 打刻 ----------
+async function doPunch(type) {
+  if (!current) return;
+  const target = current;
+  paused = true;
+  $('btnIn').disabled = $('btnOut').disabled = true;
+  try {
+    const res = await server('punch', target.emp.id, type, target.dist);
+    if (res.today) setToday(res.today);
+    if (res.ok) showToast(`${res.name} さん`, `${res.time}　${res.type}しました`, true);
+    else showToast('記録しませんでした', res.msg, false);
+  } catch (e) {
+    showToast('エラー', String(e.message || e), false);
+  }
+}
+
+function showToast(big, small, ok) {
+  $('toastBig').textContent = big; $('toastSmall').textContent = small;
+  $('toast').className = ok ? '' : 'ng';
+  $('toast').style.display = 'flex';
+  setTimeout(() => {
+    $('toast').style.display = 'none';
+    current = null; candidate = null;
+    setWho('カメラに顔を向けてください', false);
+    paused = false;
+  }, ok ? 2500 : 3500);
+}
+
+// ---------- 表示 ----------
+function setEmployees(list) {
+  employees = list.map(e => ({ ...e, descriptors: e.descriptors.map(d => new Float32Array(d)) }));
+  renderStatus(); renderEmpList();
+}
+
+function setToday(list) { today = list; renderStatus(); renderLog(); }
+
+function renderStatus() {
+  const box = $('status'); box.innerHTML = '';
+  if (!employees.length) { box.innerHTML = '<span class="empty">登録された人はいません</span>'; return; }
+  for (const e of employees) {
+    const last = today.filter(r => r.id === e.id).pop();
+    const chip = document.createElement('span');
+    chip.className = 'chip ' + (last ? (last.type === '出勤' ? 'in' : 'out') : '');
+    chip.textContent = e.name + '：' + (last ? (last.type === '出勤' ? '出勤中 ' + last.time + '〜' : '退勤 ' + last.time) : '未出勤');
+    box.appendChild(chip);
+  }
+}
+
+function renderLog() {
+  const ul = $('log'); ul.innerHTML = '';
+  if (!today.length) { ul.innerHTML = '<li class="empty">まだ打刻はありません</li>'; return; }
+  for (const r of [...today].reverse()) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="t">${r.time}</span><span class="tag ${r.type}">${r.type}</span><span></span>`;
+    li.lastChild.textContent = r.name;
+    ul.appendChild(li);
+  }
+}
+
+// ---------- 管理（顔の登録） ----------
+function openAdmin() {
+  paused = true;
+  $('admin').style.display = 'flex';
+  $('pinArea').style.display = adminPin ? 'none' : 'block';
+  $('manageArea').style.display = adminPin ? 'block' : 'none';
+  $('pin').value = '';
+}
+
+function closeAdmin() {
+  $('admin').style.display = 'none';
+  adminPin = null;
+  current = null; candidate = null;
+  setWho(employees.length ? 'カメラに顔を向けてください' : 'まず「⚙ 管理」から顔を登録してください', false);
+  paused = false;
+}
+
+async function submitPin() {
+  const pin = $('pin').value;
+  if (await server('checkPin', pin)) {
+    adminPin = pin;
+    $('pinArea').style.display = 'none'; $('manageArea').style.display = 'block';
+    renderEmpList();
+  } else alert('番号が違います');
+}
+
+function renderEmpList() {
+  const box = $('empList'); if (!box) return;
+  box.innerHTML = employees.length ? '' : '<div class="empty">まだいません</div>';
+  for (const e of employees) {
+    const div = document.createElement('div'); div.className = 'emp';
+    div.innerHTML = `<span><span class="n"></span><small>顔データ ${e.descriptors.length}件</small></span><button class="red">削除</button>`;
+    div.querySelector('.n').textContent = e.name;
+    div.querySelector('button').onclick = async () => {
+      if (!confirm(e.name + ' さんを削除しますか？（打刻の記録は残ります）')) return;
+      setEmployees(await server('deleteEmployee', adminPin, e.id));
+    };
+    box.appendChild(div);
+  }
+}
+
+async function startRegister() {
+  const name = $('regName').value.trim();
+  if (!name) { $('regMsg').textContent = '名前を入れてください'; return; }
+  $('regBtn').disabled = true;
+  const shots = [];
+  let tries = 0;
+  while (shots.length < SHOTS && tries < 40) {
+    tries++;
+    const r = await detect();
+    if (r) {
+      shots.push(Array.from(r.descriptor, v => Math.round(v * 10000) / 10000));
+      $('regMsg').textContent = `撮影 ${shots.length} / ${SHOTS}　少し顔の向きを変えてください`;
+      $('regBar').style.width = (shots.length / SHOTS * 100) + '%';
+      await new Promise(res => setTimeout(res, 700));
+    } else {
+      $('regMsg').textContent = '顔が見つかりません。カメラの正面に来てください';
+      await new Promise(res => setTimeout(res, 300));
+    }
+  }
+  if (shots.length < SHOTS) {
+    $('regMsg').textContent = '撮影できませんでした。明るい場所でもう一度お試しください';
+  } else {
+    // 他の人と似すぎていないか確認
+    const others = employees.filter(e => e.name !== name);
+    const clash = others.find(e => e.descriptors.some(d => shots.some(s => faceapi.euclideanDistance(s, d) < THRESHOLD)));
+    if (clash && !confirm(`${clash.name} さんの顔とよく似ています。本当に「${name}」として登録しますか？`)) {
+      $('regMsg').textContent = '登録をやめました';
+    } else {
+      $('regMsg').textContent = '保存しています…';
+      try {
+        setEmployees(await server('registerEmployee', adminPin, name, shots));
+        $('regMsg').textContent = `${name} さんを登録しました`;
+        $('regName').value = '';
+      } catch (e) { $('regMsg').textContent = 'エラー：' + (e.message || e); }
+    }
+  }
+  $('regBar').style.width = '0';
+  $('regBtn').disabled = false;
+}
+
+init();
+</script>
+</body>
+</html>
