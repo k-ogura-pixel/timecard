@@ -27,8 +27,9 @@
   td.note { font-size: 13px; color: var(--sub); }
   .tag { display: inline-block; padding: 1px 8px; border-radius: 6px; color: #fff; font-size: 13px; }
   .tag.出勤 { background: var(--in); } .tag.退勤 { background: var(--out); }
-  #msg { min-height: 22px; margin-top: 10px; color: var(--accent); }
-  #msg.err { color: var(--ng); }
+  #msg, .msg { min-height: 22px; margin-top: 10px; color: var(--accent); }
+  #msg.err, .msg.err { color: var(--ng); }
+  .sum { padding: 4px 12px; border-radius: 999px; background: #e8eef7; font-size: 14px; }
   #login { max-width: 420px; margin: 60px auto; }
   #login input { width: 100%; margin: 6px 0 14px; }
   .empty { color: var(--sub); padding: 10px 0; }
@@ -71,6 +72,30 @@
     </div>
 
     <div class="card">
+      <h2>有給</h2>
+      <div class="bar">
+        <b>入れる：</b>
+        <select id="lvEmp"></select>
+        <input type="date" id="lvDate">
+        <select id="lvKind"><option>全日</option><option>午前半休</option><option>午後半休</option></select>
+        <input id="lvMemo" placeholder="メモ（なくてよい）" style="width:180px">
+        <button onclick="addLeave()">追加</button>
+      </div>
+      <div class="bar" style="margin-top:14px">
+        <button class="gray" onclick="moveYear(-1)">◀</button>
+        <b id="lvYearLabel"></b>
+        <button class="gray" onclick="moveYear(1)">▶</button>
+        <span style="color:var(--sub);font-size:14px">の使った日数</span>
+      </div>
+      <div class="bar" id="lvSum" style="margin-top:8px"></div>
+      <table>
+        <thead><tr><th>日付</th><th>名前</th><th>種類</th><th>メモ</th><th></th></tr></thead>
+        <tbody id="lvRows"></tbody>
+      </table>
+      <div id="lvMsg" class="msg"></div>
+    </div>
+
+    <div class="card">
       <h2>登録している人</h2>
       <div style="color:var(--sub);font-size:14px">顔の登録はカメラが要るので、iPadの「⚙ 管理」から行ってください。</div>
       <table><tbody id="emps"></tbody></table>
@@ -101,7 +126,7 @@ async function server(fn, ...args) {
 // 手元確認用のダミー（本物の合言葉・番号はApps Scriptだけが持つ）
 const mock = (() => {
   let emps = [{ id: '1', name: 'テスト太郎', descriptors: [[0]] }, { id: '2', name: 'テスト花子', descriptors: [[0]] }];
-  let log = [];
+  let log = [], leaves = [];
   const ymd = ts => { const d = new Date(ts); return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0'); };
   const recs = date => log.map((r, i) => ({ ...r, row: i + 2 })).filter(r => ymd(r.ts) === date).sort((a, b) => a.ts - b.ts);
   return {
@@ -115,6 +140,13 @@ const mock = (() => {
       return { records: recs(rec.date), today: [] };
     },
     deleteRecord(p, row, ts, date) { log.splice(row - 2, 1); return { records: recs(date), today: [] }; },
+    getLeaves: (p, year) => leaves.map((l, i) => ({ ...l, row: i + 2 })).filter(l => l.date.startsWith(year + '/')).sort((a, b) => a.date < b.date ? -1 : 1),
+    addLeave(p, lv) {
+      if (leaves.some(l => l.id === lv.id && l.date === lv.date)) throw new Error('もう入っています');
+      leaves.push({ ...lv, name: emps.find(x => x.id === lv.id).name, days: lv.kind === '全日' ? 1 : 0.5, ts: Date.now() });
+      return this.getLeaves(p, lv.date.slice(0, 4));
+    },
+    deleteLeave(p, row, ts, year) { leaves.splice(row - 2, 1); return this.getLeaves(p, year); },
     deleteEmployee(p, id) { emps = emps.filter(x => x.id !== id); return emps; }
   };
 })();
@@ -131,6 +163,8 @@ async function login() {
     setEmployees(d.employees);
     $('login').style.display = 'none'; $('main').style.display = 'block';
     setToday();
+    $('lvDate').value = isoDay(new Date());
+    lvYear = new Date().getFullYear(); loadLeaves();
   } catch (e) { $('loginMsg').textContent = e.message || String(e); }
 }
 
@@ -204,11 +238,65 @@ function addRecord() {
   $('addTime').value = '';
 }
 
+// ---------- 有給 ----------
+let lvYear = new Date().getFullYear(), leaves = [];
+
+function lvMsg(text, err) { $('lvMsg').textContent = text; $('lvMsg').className = 'msg' + (err ? ' err' : ''); }
+function moveYear(n) { lvYear += n; loadLeaves(); }
+
+async function loadLeaves() {
+  $('lvYearLabel').textContent = lvYear + '年';
+  lvMsg('読み込んでいます…');
+  try { leaves = await server('getLeaves', pin, String(lvYear)); renderLeaves(); lvMsg(''); }
+  catch (e) { lvMsg('エラー：' + (e.message || e), true); }
+}
+
+function renderLeaves() {
+  const sum = $('lvSum'); sum.innerHTML = '';
+  for (const e of employees) {
+    const d = leaves.filter(l => l.id === e.id).reduce((s, l) => s + l.days, 0);
+    const s = document.createElement('span'); s.className = 'sum'; s.textContent = `${e.name}：${d}日`;
+    sum.appendChild(s);
+  }
+  const tb = $('lvRows'); tb.innerHTML = '';
+  if (!leaves.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">この年の有給はありません</td></tr>'; return; }
+  for (const l of leaves) {
+    const tr = document.createElement('tr');
+    const c = [0, 1, 2, 3, 4].map(() => tr.appendChild(document.createElement('td')));
+    const dt = new Date(l.date.replace(/\//g, '-') + 'T00:00');
+    c[0].textContent = `${dt.getMonth() + 1}/${dt.getDate()}（${'日月火水木金土'[dt.getDay()]}）`;
+    c[1].textContent = l.name; c[2].textContent = l.kind;
+    c[3].className = 'note'; c[3].textContent = l.memo;
+    const del = document.createElement('button'); del.className = 'red'; del.textContent = '削除'; c[4].style.textAlign = 'right'; c[4].appendChild(del);
+    del.onclick = () => { if (confirm(`${l.name} さんの ${l.date} の有給を消しますか？`)) lvAction('deleteLeave', l.row, l.ts, String(lvYear)); };
+    tb.appendChild(tr);
+  }
+}
+
+async function lvAction(fn, ...args) {
+  lvMsg('保存しています…');
+  try { leaves = await server(fn, pin, ...args); renderLeaves(); lvMsg(fn === 'deleteLeave' ? '消しました' : '入れました'); }
+  catch (e) { lvMsg('エラー：' + (e.message || e), true); }
+}
+
+function addLeave() {
+  if (!$('lvEmp').value) return lvMsg('登録している人がいません', true);
+  if (!$('lvDate').value) return lvMsg('日付を入れてください', true);
+  const date = $('lvDate').value.replace(/-/g, '/');
+  const year = Number(date.slice(0, 4));
+  if (year !== lvYear) { lvYear = year; $('lvYearLabel').textContent = lvYear + '年'; }
+  lvAction('addLeave', { date, id: $('lvEmp').value, kind: $('lvKind').value, memo: $('lvMemo').value.trim() });
+  $('lvMemo').value = '';
+}
+
 // ---------- 登録している人 ----------
 function setEmployees(list) {
   employees = list;
-  const sel = $('addEmp'); sel.innerHTML = '';
-  for (const e of employees) { const o = document.createElement('option'); o.value = e.id; o.textContent = e.name; sel.appendChild(o); }
+  for (const id of ['addEmp', 'lvEmp']) {
+    const sel = $(id); sel.innerHTML = '';
+    for (const e of employees) { const o = document.createElement('option'); o.value = e.id; o.textContent = e.name; sel.appendChild(o); }
+  }
+  if (leaves.length) renderLeaves();
   const tb = $('emps'); tb.innerHTML = '';
   if (!employees.length) { tb.innerHTML = '<tr><td class="empty">まだいません</td></tr>'; return; }
   for (const e of employees) {
