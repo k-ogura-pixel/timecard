@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>タイムカード 管理</title>
+<style>
+  :root {
+    --bg: #f4f6fa; --panel: #ffffff; --line: #dde3ec; --text: #1e293b; --sub: #64748b;
+    --in: #16a34a; --out: #ea580c; --ng: #dc2626; --accent: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Yu Gothic UI", "Meiryo", "Hiragino Sans", sans-serif; font-size: 16px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 24px; margin: 0 0 16px; }
+  h2 { font-size: 18px; margin: 0 0 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  input, select { font-size: 16px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
+  button { font-size: 15px; padding: 8px 14px; border: none; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.gray { background: #64748b; } button.red { background: var(--ng); }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: 13px; color: var(--sub); font-weight: 600; }
+  td.note { font-size: 13px; color: var(--sub); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 6px; color: #fff; font-size: 13px; }
+  .tag.出勤 { background: var(--in); } .tag.退勤 { background: var(--out); }
+  #msg { min-height: 22px; margin-top: 10px; color: var(--accent); }
+  #msg.err { color: var(--ng); }
+  #login { max-width: 420px; margin: 60px auto; }
+  #login input { width: 100%; margin: 6px 0 14px; }
+  .empty { color: var(--sub); padding: 10px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>タイムカード 管理</h1>
+
+  <div id="login" class="card">
+    <h2>ログイン</h2>
+    <label>合言葉<input id="key" autocomplete="off"></label>
+    <label>管理用の番号<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
+    <button onclick="login()">開く</button>
+    <div id="loginMsg" style="margin-top:10px;color:var(--ng)"></div>
+  </div>
+
+  <div id="main" style="display:none">
+    <div class="card">
+      <h2>打刻の修正</h2>
+      <div class="bar">
+        <button class="gray" onclick="moveDay(-1)">◀ 前の日</button>
+        <input type="date" id="day" onchange="loadRecords()">
+        <button class="gray" onclick="moveDay(1)">次の日 ▶</button>
+        <button class="gray" onclick="setToday()">今日</button>
+        <button class="gray" onclick="loadRecords()">読み込み直す</button>
+      </div>
+      <table>
+        <thead><tr><th>名前</th><th>区分</th><th>時刻</th><th></th><th>備考</th></tr></thead>
+        <tbody id="recs"></tbody>
+      </table>
+      <div class="bar" style="margin-top:14px">
+        <b>足す：</b>
+        <select id="addEmp"></select>
+        <select id="addType"><option>出勤</option><option>退勤</option></select>
+        <input type="time" id="addTime">
+        <button onclick="addRecord()">追加</button>
+      </div>
+      <div id="msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>登録している人</h2>
+      <div style="color:var(--sub);font-size:14px">顔の登録はカメラが要るので、iPadの「⚙ 管理」から行ってください。</div>
+      <table><tbody id="emps"></tbody></table>
+    </div>
+
+    <button class="gray" onclick="logout()">ログアウト（このPCに覚えた合言葉を消す）</button>
+  </div>
+</div>
+
+<script>
+const API_URL = 'https://script.google.com/macros/s/AKfycbylhBqvc1wVFc9bh1agH-86LBQS3AvFRVd10iItqp7jprPivE3MfLHIw9sAAMM2ueQ35Q/exec';
+const USE_MOCK = location.hostname === 'localhost' || location.protocol === 'file:';
+const KEY_STORE = 'timecard_key';
+const $ = id => document.getElementById(id);
+let key = '', pin = '', employees = [], records = [];
+
+function store(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} }
+function stored(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+
+async function server(fn, ...args) {
+  if (USE_MOCK) return mock[fn](...args);
+  const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ key, fn, args }) });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error);
+  return data.result;
+}
+
+// 手元確認用のダミー（本物の合言葉・番号はApps Scriptだけが持つ）
+const mock = (() => {
+  let emps = [{ id: '1', name: 'テスト太郎', descriptors: [[0]] }, { id: '2', name: 'テスト花子', descriptors: [[0]] }];
+  let log = [];
+  const ymd = ts => { const d = new Date(ts); return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0'); };
+  const recs = date => log.map((r, i) => ({ ...r, row: i + 2 })).filter(r => ymd(r.ts) === date).sort((a, b) => a.ts - b.ts);
+  return {
+    getInitData: () => ({ employees: emps, today: [] }),
+    checkPin: p => p !== '',
+    getRecords: (p, date) => recs(date),
+    saveRecord(p, rec) {
+      const e = { id: rec.id, name: emps.find(x => x.id === rec.id).name, type: rec.type, time: rec.time,
+        ts: new Date(rec.date.replace(/\//g, '-') + 'T' + rec.time).getTime(), note: (rec.row ? '修正' : '手入力') };
+      if (rec.row) log[rec.row - 2] = e; else log.push(e);
+      return { records: recs(rec.date), today: [] };
+    },
+    deleteRecord(p, row, ts, date) { log.splice(row - 2, 1); return { records: recs(date), today: [] }; },
+    deleteEmployee(p, id) { emps = emps.filter(x => x.id !== id); return emps; }
+  };
+})();
+
+// ---------- ログイン ----------
+async function login() {
+  key = $('key').value.trim(); pin = $('pin').value;
+  if (!key || !pin) { $('loginMsg').textContent = '合言葉と番号を入れてください'; return; }
+  $('loginMsg').textContent = '確認しています…';
+  try {
+    if (!(await server('checkPin', pin))) { $('loginMsg').textContent = '管理用の番号が違います'; return; }
+    store(KEY_STORE, key);
+    const d = await server('getInitData');
+    setEmployees(d.employees);
+    $('login').style.display = 'none'; $('main').style.display = 'block';
+    setToday();
+  } catch (e) { $('loginMsg').textContent = e.message || String(e); }
+}
+
+function logout() { store(KEY_STORE, ''); location.reload(); }
+
+// ---------- 日付 ----------
+const pad = n => String(n).padStart(2, '0');
+const isoDay = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const sheetDay = () => $('day').value.replace(/-/g, '/');
+function setToday() { $('day').value = isoDay(new Date()); loadRecords(); }
+function moveDay(n) {
+  const d = new Date($('day').value + 'T00:00'); d.setDate(d.getDate() + n);
+  $('day').value = isoDay(d); loadRecords();
+}
+
+// ---------- 打刻 ----------
+function msg(text, err) { $('msg').textContent = text; $('msg').className = err ? 'err' : ''; }
+
+async function loadRecords() {
+  if (!$('day').value) return;
+  msg('読み込んでいます…');
+  try {
+    records = await server('getRecords', pin, sheetDay());
+    renderRecords();
+    msg(records.length ? '' : 'この日の打刻はありません');
+  } catch (e) { msg('エラー：' + (e.message || e), true); }
+}
+
+function typeSelect(value) {
+  const s = document.createElement('select');
+  for (const t of ['出勤', '退勤']) {
+    const o = document.createElement('option'); o.value = o.textContent = t;
+    if (t === value) o.selected = true;
+    s.appendChild(o);
+  }
+  return s;
+}
+
+function renderRecords() {
+  const tb = $('recs'); tb.innerHTML = '';
+  for (const r of records) {
+    const tr = document.createElement('tr');
+    const cells = [0, 1, 2, 3, 4].map(() => tr.appendChild(document.createElement('td')));
+    cells[0].textContent = r.name;
+    const sel = typeSelect(r.type); cells[1].appendChild(sel);
+    const time = document.createElement('input'); time.type = 'time'; time.value = r.time.padStart(5, '0'); cells[2].appendChild(time);
+    const save = document.createElement('button'); save.textContent = '保存';
+    const del = document.createElement('button'); del.textContent = '削除'; del.className = 'red'; del.style.marginLeft = '6px';
+    save.onclick = () => recAction('saveRecord', { row: r.row, ts: r.ts, date: sheetDay(), time: time.value, id: r.id, type: sel.value });
+    del.onclick = () => { if (confirm(`${r.name} さんの ${r.time} ${r.type} を消しますか？`)) recAction('deleteRecord', r.row, r.ts, sheetDay()); };
+    cells[3].append(save, del);
+    cells[4].className = 'note'; cells[4].textContent = r.note;
+    tb.appendChild(tr);
+  }
+  if (!records.length) tb.innerHTML = '<tr><td colspan="5" class="empty">この日の打刻はありません</td></tr>';
+}
+
+async function recAction(fn, ...args) {
+  msg('保存しています…');
+  try {
+    const res = await server(fn, pin, ...args);
+    records = res.records; renderRecords();
+    msg(fn === 'deleteRecord' ? '消しました' : '保存しました');
+  } catch (e) { msg('エラー：' + (e.message || e), true); }
+}
+
+function addRecord() {
+  if (!$('addEmp').value) return msg('登録している人がいません', true);
+  if (!$('addTime').value) return msg('時刻を入れてください', true);
+  recAction('saveRecord', { date: sheetDay(), time: $('addTime').value, id: $('addEmp').value, type: $('addType').value });
+  $('addTime').value = '';
+}
+
+// ---------- 登録している人 ----------
+function setEmployees(list) {
+  employees = list;
+  const sel = $('addEmp'); sel.innerHTML = '';
+  for (const e of employees) { const o = document.createElement('option'); o.value = e.id; o.textContent = e.name; sel.appendChild(o); }
+  const tb = $('emps'); tb.innerHTML = '';
+  if (!employees.length) { tb.innerHTML = '<tr><td class="empty">まだいません</td></tr>'; return; }
+  for (const e of employees) {
+    const tr = document.createElement('tr');
+    const n = tr.appendChild(document.createElement('td')); n.textContent = e.name;
+    const c = tr.appendChild(document.createElement('td')); c.className = 'note'; c.textContent = '顔データ ' + e.descriptors.length + '件';
+    const b = tr.appendChild(document.createElement('td')); b.style.textAlign = 'right';
+    const del = document.createElement('button'); del.className = 'red'; del.textContent = '削除'; b.appendChild(del);
+    del.onclick = async () => {
+      if (!confirm(e.name + ' さんを削除しますか？（打刻の記録は残ります）')) return;
+      try { setEmployees(await server('deleteEmployee', pin, e.id)); } catch (err) { alert(err.message || err); }
+    };
+    tb.appendChild(tr);
+  }
+}
+
+$('key').value = stored(KEY_STORE);
+$('pin').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+</script>
+</body>
+</html>
