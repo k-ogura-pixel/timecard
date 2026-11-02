@@ -60,7 +60,7 @@
 
   /* 管理画面 */
   #admin { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none; align-items: center; justify-content: center; z-index: 25; }
-  #admin .box { background: var(--panel); border-radius: 20px; padding: 24px; width: min(560px, 92vw); max-height: 90vh; overflow-y: auto; }
+  #admin .box { background: var(--panel); border-radius: 20px; padding: 24px; width: min(680px, 94vw); max-height: 90vh; overflow-y: auto; }
   #admin h2 { margin: 0 0 16px; }
   #admin input { width: 100%; font-size: 22px; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
   #admin .row { display: flex; gap: 10px; margin-top: 12px; }
@@ -71,6 +71,13 @@
   #regMsg { margin-top: 12px; font-size: 18px; min-height: 26px; color: #fde68a; }
   .progress { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; margin-top: 10px; }
   .progress div { height: 100%; width: 0; background: var(--ok); transition: width .2s; }
+  #admin select, #admin .rec input, #admin .addrow input, #admin input.date { width: auto; font-size: 18px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  #admin .rec, #admin .addrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  #admin .rec .nm { flex: 1 1 90px; font-size: 18px; }
+  #admin .rec small { flex-basis: 100%; color: var(--sub); font-size: 13px; }
+  #admin .rec button, #admin .addrow button { padding: 8px 14px; font-size: 16px; }
+  #recMsg { margin-top: 8px; font-size: 16px; min-height: 22px; color: #fde68a; }
 </style>
 </head>
 <body>
@@ -111,6 +118,13 @@
     <div id="regMsg">カメラの正面で、少しずつ顔の向きを変えてください（5回撮影）</div>
     <h2 style="margin-top:24px">登録済み</h2>
     <div id="empList"></div>
+    <h2 style="margin-top:24px">打刻の修正</h2>
+    <div class="row" style="align-items:center"><input type="date" id="recDate" class="date" onchange="loadRecords()"><button class="gray" onclick="loadRecords()">読み込み直す</button></div>
+    <div id="recList"></div>
+    <div class="addrow"><b style="font-size:16px">足す：</b><select id="addEmp"></select>
+      <select id="addType"><option>出勤</option><option>退勤</option></select>
+      <input type="time" id="addTime"><button onclick="addRecord()">追加</button></div>
+    <div id="recMsg"></div>
   </div>
 </div></div>
 
@@ -169,7 +183,21 @@ const mock = (() => {
   const todayRecs = () => load('log').filter(r => new Date(r.ts).toDateString() === new Date().toDateString());
   return {
     getInitData: () => ({ employees: load('emp'), today: todayRecs() }),
-    checkPin: pin => pin === '1234',
+    checkPin: pin => pin !== '',   // 手元確認用のダミー（本物の番号はApps Scriptだけが持つ）
+    getRecords(pin, date) {
+      const ymd = ts => { const d = new Date(ts); return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0'); };
+      return load('log').map((r, i) => ({ ...r, row: i + 2 })).filter(r => ymd(r.ts) === date).sort((a, b) => a.ts - b.ts);
+    },
+    saveRecord(pin, rec) {
+      const l = load('log'); const emp = load('emp').find(x => x.id === rec.id);
+      const e = { id: rec.id, name: emp.name, type: rec.type, time: rec.time, ts: new Date(rec.date.replace(/\//g, '-') + 'T' + rec.time).getTime(), note: rec.row ? '修正' : '手入力' };
+      if (rec.row) l[rec.row - 2] = e; else l.push(e);
+      save('log', l); return { records: this.getRecords(pin, rec.date), today: todayRecs() };
+    },
+    deleteRecord(pin, row, ts, date) {
+      const l = load('log'); l.splice(row - 2, 1); save('log', l);
+      return { records: this.getRecords(pin, date), today: todayRecs() };
+    },
     registerEmployee(pin, name, desc) {
       const e = load('emp'); const f = e.find(x => x.name === name);
       if (f) f.descriptors = desc; else e.push({ id: String(e.length + 1), name, descriptors: desc });
@@ -310,7 +338,7 @@ function showToast(big, small, ok) {
 // ---------- 表示 ----------
 function setEmployees(list) {
   employees = list.map(e => ({ ...e, descriptors: e.descriptors.map(d => new Float32Array(d)) }));
-  renderStatus(); renderEmpList();
+  renderStatus(); renderEmpList(); renderRecords();
 }
 
 function setToday(list) { today = list; renderStatus(); renderLog(); }
@@ -361,6 +389,8 @@ async function submitPin() {
     adminPin = pin;
     $('pinArea').style.display = 'none'; $('manageArea').style.display = 'block';
     renderEmpList();
+    if (!$('recDate').value) $('recDate').value = localYmd(new Date(), '-');
+    loadRecords();
   } else alert('番号が違います');
 }
 
@@ -377,6 +407,72 @@ function renderEmpList() {
     };
     box.appendChild(div);
   }
+}
+
+// ---------- 管理（打刻の修正・追加・削除） ----------
+let records = [];
+
+function localYmd(d, sep) {
+  return d.getFullYear() + sep + String(d.getMonth() + 1).padStart(2, '0') + sep + String(d.getDate()).padStart(2, '0');
+}
+const recDay = () => $('recDate').value.replace(/-/g, '/');   // シートの形 yyyy/MM/dd
+
+async function loadRecords() {
+  if (!$('recDate').value) return;
+  $('recMsg').textContent = '読み込んでいます…';
+  try {
+    records = await server('getRecords', adminPin, recDay());
+    renderRecords();
+    $('recMsg').textContent = records.length ? '' : 'この日の打刻はありません';
+  } catch (e) { $('recMsg').textContent = 'エラー：' + (e.message || e); }
+}
+
+function typeSelect(value) {
+  const s = document.createElement('select');
+  for (const t of ['出勤', '退勤']) {
+    const o = document.createElement('option'); o.value = o.textContent = t;
+    if (t === value) o.selected = true;
+    s.appendChild(o);
+  }
+  return s;
+}
+
+function renderRecords() {
+  const box = $('recList'); box.innerHTML = '';
+  for (const r of records) {
+    const div = document.createElement('div'); div.className = 'rec';
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
+    const sel = typeSelect(r.type);
+    const time = document.createElement('input'); time.type = 'time'; time.value = r.time.padStart(5, '0');
+    const save = document.createElement('button'); save.textContent = '保存';
+    const del = document.createElement('button'); del.className = 'red'; del.textContent = '削除';
+    save.onclick = () => recAction('saveRecord', { row: r.row, ts: r.ts, date: recDay(), time: time.value, id: r.id, type: sel.value });
+    del.onclick = () => {
+      if (confirm(`${r.name} さんの ${r.time} ${r.type} を消しますか？`)) recAction('deleteRecord', r.row, r.ts, recDay());
+    };
+    div.append(nm, sel, time, save, del);
+    if (r.note) { const n = document.createElement('small'); n.textContent = r.note; div.appendChild(n); }
+    box.appendChild(div);
+  }
+  const addEmp = $('addEmp'); const keep = addEmp.value; addEmp.innerHTML = '';
+  for (const e of employees) { const o = document.createElement('option'); o.value = e.id; o.textContent = e.name; addEmp.appendChild(o); }
+  if (keep) addEmp.value = keep;
+}
+
+async function recAction(fn, ...args) {
+  $('recMsg').textContent = '保存しています…';
+  try {
+    const res = await server(fn, adminPin, ...args);
+    records = res.records; setToday(res.today); renderRecords();
+    $('recMsg').textContent = fn === 'deleteRecord' ? '消しました' : '保存しました';
+  } catch (e) { $('recMsg').textContent = 'エラー：' + (e.message || e); }
+}
+
+function addRecord() {
+  if (!$('addEmp').value) { $('recMsg').textContent = '先に顔の登録をしてください'; return; }
+  if (!$('addTime').value) { $('recMsg').textContent = '時刻を入れてください'; return; }
+  recAction('saveRecord', { date: recDay(), time: $('addTime').value, id: $('addEmp').value, type: $('addType').value });
+  $('addTime').value = '';
 }
 
 async function startRegister() {
