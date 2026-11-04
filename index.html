@@ -206,6 +206,8 @@ const mock = (() => {
     deleteEmployee(pin, id) { const e = load('emp').filter(x => x.id !== id); save('emp', e); return e; },
     punch(id, type) {
       const emp = load('emp').find(x => x.id === id); const now = new Date();
+      const done = todayRecs().find(r => r.id === id && r.type === type);
+      if (done) return { ok: false, msg: emp.name + 'さんは きょう ' + done.time + ' に' + type + '済みです', today: todayRecs() };
       const l = load('log'); l.push({ id, name: emp.name, type, time: hm(now), ts: now.getTime() }); save('log', l);
       return { ok: true, name: emp.name, type, time: hm(now), today: todayRecs() };
     }
@@ -255,8 +257,14 @@ function fatal(title, sub) {
   $('loadingSub').textContent = sub;
 }
 
+let lastDay = new Date().toDateString();
 function tick() {
   const d = new Date();
+  if (d.toDateString() !== lastDay) {   // 日付が変わったら今日の打刻を読み直す
+    lastDay = d.toDateString();
+    renderStatus(); renderLog();
+    if ($('loading').style.display === 'none') server('getInitData').then(r => setToday(r.today)).catch(() => {});
+  }
   $('clock').textContent = d.toTimeString().slice(0, 8);
   $('date').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${'日月火水木金土'[d.getDay()]}）`;
 }
@@ -304,7 +312,16 @@ async function loop() {
 function setWho(text, ok) {
   $('who').textContent = text;
   $('who').className = ok ? 'ok' : '';
-  $('btnIn').disabled = $('btnOut').disabled = !ok;
+  // 今日もう押した区分のボタンは押せなくする（同じ日に出勤・退勤は1回ずつ）
+  const done = ok && current ? todayList().filter(r => r.id === current.emp.id).map(r => r.type) : [];
+  $('btnIn').disabled = !ok || done.includes('出勤');
+  $('btnOut').disabled = !ok || done.includes('退勤');
+}
+
+// 今日の分だけ（iPadを開いたまま日付が変わっても、前の日の打刻を数えない）
+function todayList() {
+  const d = new Date().toDateString();
+  return today.filter(r => !r.ts || new Date(r.ts).toDateString() === d);
 }
 
 // ---------- 打刻 ----------
@@ -313,6 +330,8 @@ async function doPunch(type) {
   const target = current;
   paused = true;
   $('btnIn').disabled = $('btnOut').disabled = true;
+  const done = todayList().find(r => r.id === target.emp.id && r.type === type);
+  if (done) return showToast('きろく していません', `${target.emp.name}さんは きょう ${done.time} に ${KANA[type]} しています`, false);
   try {
     const res = await server('punch', target.emp.id, type, target.dist);
     if (res.today) setToday(res.today);
@@ -347,7 +366,7 @@ function renderStatus() {
   const box = $('status'); box.innerHTML = '';
   if (!employees.length) { box.innerHTML = '<span class="empty">登録された人はいません</span>'; return; }
   for (const e of employees) {
-    const last = today.filter(r => r.id === e.id).pop();
+    const last = todayList().filter(r => r.id === e.id).pop();
     const chip = document.createElement('span');
     chip.className = 'chip ' + (last ? (last.type === '出勤' ? 'in' : 'out') : '');
     chip.textContent = e.name + '：' + (last ? (last.type === '出勤' ? 'しゅっきん ' + last.time + '〜' : 'たいきん ' + last.time) : 'まだ');
@@ -357,8 +376,9 @@ function renderStatus() {
 
 function renderLog() {
   const ul = $('log'); ul.innerHTML = '';
-  if (!today.length) { ul.innerHTML = '<li class="empty">まだ打刻はありません</li>'; return; }
-  for (const r of [...today].reverse()) {
+  const list = todayList();
+  if (!list.length) { ul.innerHTML = '<li class="empty">まだ打刻はありません</li>'; return; }
+  for (const r of [...list].reverse()) {
     const li = document.createElement('li');
     li.innerHTML = `<span class="t">${r.time}</span><span class="tag ${r.type}">${KANA[r.type] || r.type}</span><span></span>`;
     li.lastChild.textContent = r.name;
@@ -460,6 +480,11 @@ function renderRecords() {
 }
 
 async function recAction(fn, ...args) {
+  if (fn === 'saveRecord') {   // 同じ人・同じ日に出勤・退勤は1回ずつ
+    const rec = args[0];
+    const dup = records.find(r => r.id === rec.id && r.type === rec.type && r.row !== rec.row);
+    if (dup) { $('recMsg').textContent = `${dup.name} さんのこの日の${rec.type}は ${dup.time} で入っています。そちらを直してください`; return; }
+  }
   $('recMsg').textContent = '保存しています…';
   try {
     const res = await server(fn, adminPin, ...args);

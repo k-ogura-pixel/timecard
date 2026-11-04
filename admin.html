@@ -134,6 +134,7 @@ const mock = (() => {
     checkPin: p => p !== '',
     getRecords: (p, date) => recs(date),
     saveRecord(p, rec) {
+      if (recs(rec.date).some(r => r.id === rec.id && r.type === rec.type && r.row !== rec.row)) throw new Error('もう入っています');
       const e = { id: rec.id, name: emps.find(x => x.id === rec.id).name, type: rec.type, time: rec.time,
         ts: new Date(rec.date.replace(/\//g, '-') + 'T' + rec.time).getTime(), note: (rec.row ? '修正' : '手入力') };
       if (rec.row) log[rec.row - 2] = e; else log.push(e);
@@ -223,6 +224,11 @@ function renderRecords() {
 }
 
 async function recAction(fn, ...args) {
+  if (fn === 'saveRecord') {   // 同じ人・同じ日に出勤・退勤は1回ずつ
+    const rec = args[0];
+    const dup = records.find(r => r.id === rec.id && r.type === rec.type && r.row !== rec.row);
+    if (dup) return msg(`${dup.name} さんのこの日の${rec.type}は ${dup.time} で入っています。そちらを直してください`, true);
+  }
   msg('保存しています…');
   try {
     const res = await server(fn, pin, ...args);
