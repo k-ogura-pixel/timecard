@@ -52,6 +52,12 @@
   #toast .big { font-size: 44px; font-weight: 800; }
   #toast .small { font-size: 24px; margin-top: 10px; color: #444; }
   #toast.ng .big { color: var(--ng); }
+  /* 押し忘れの警告 */
+  #toast.missed .box { border: 6px solid var(--ng); }
+  #toastWarn { display: none; margin-top: 24px; padding: 18px 28px; border-radius: 16px; background: var(--ng); color: #fff;
+    font-size: 40px; font-weight: 800; line-height: 1.5; word-break: keep-all; }
+  #toast.missed #toastWarn { display: block; }
+  #toastWhen { font-size: 32px; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 2px solid rgba(255,255,255,.6); }
 
   /* 読み込み中 */
   #loading { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
@@ -102,7 +108,8 @@
   </div>
 </div>
 
-<div id="toast"><div class="box"><div class="big" id="toastBig"></div><div class="small" id="toastSmall"></div></div></div>
+<div id="toast"><div class="box"><div class="big" id="toastBig"></div><div class="small" id="toastSmall"></div>
+  <div id="toastWarn"><div id="toastWhen"></div>おぐらさんに<wbr>おしわすれたと<wbr>つたえてください</div></div></div>
 
 <div id="admin"><div class="box">
   <div id="pinArea">
@@ -180,12 +187,12 @@ const mock = (() => {
   const load = k => JSON.parse(localStorage.getItem('tc_' + k) || '[]');
   const save = (k, v) => localStorage.setItem('tc_' + k, JSON.stringify(v));
   const hm = d => d.toTimeString().slice(0, 5);
+  const ymd = ts => { const d = new Date(ts); return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0'); };
   const todayRecs = () => load('log').filter(r => new Date(r.ts).toDateString() === new Date().toDateString());
   return {
     getInitData: () => ({ employees: load('emp'), today: todayRecs() }),
     checkPin: pin => pin !== '',   // 手元確認用のダミー（本物の番号はApps Scriptだけが持つ）
     getRecords(pin, date) {
-      const ymd = ts => { const d = new Date(ts); return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0'); };
       return load('log').map((r, i) => ({ ...r, row: i + 2 })).filter(r => ymd(r.ts) === date).sort((a, b) => a.ts - b.ts);
     },
     saveRecord(pin, rec) {
@@ -208,8 +215,16 @@ const mock = (() => {
       const emp = load('emp').find(x => x.id === id); const now = new Date();
       const done = todayRecs().find(r => r.id === id && r.type === type);
       if (done) return { ok: false, msg: emp.name + 'さんは きょう ' + done.time + ' に' + type + '済みです', today: todayRecs() };
+      // 押し忘れ（本物は Apps Script の findMissed_ が判定してメールも送る）
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const mine = load('log').filter(r => r.id === id).sort((a, b) => a.ts - b.ts);
+      const todays = mine.filter(r => r.ts >= start), prev = mine.filter(r => r.ts < start).pop();
+      const missed = [];
+      if (!todays.length && prev && prev.type === '出勤') missed.push({ date: ymd(prev.ts), type: '退勤' });
+      if (type === '退勤' && !todays.some(r => r.type === '出勤')) missed.push({ date: ymd(now), type: '出勤' });
+      if (type === '出勤' && todays.some(r => r.type === '退勤')) missed.push({ date: ymd(now), type: '順番' });
       const l = load('log'); l.push({ id, name: emp.name, type, time: hm(now), ts: now.getTime() }); save('log', l);
-      return { ok: true, name: emp.name, type, time: hm(now), today: todayRecs() };
+      return { ok: true, name: emp.name, type, time: hm(now), today: todayRecs(), missed };
     }
   };
 })();
@@ -335,23 +350,36 @@ async function doPunch(type) {
   try {
     const res = await server('punch', target.emp.id, type, target.dist);
     if (res.today) setToday(res.today);
-    if (res.ok) showToast(`${res.name} さん`, `${res.time}　${KANA[res.type]} しました`, true);
+    if (res.ok) showToast(`${res.name} さん`, `${res.time}　${KANA[res.type]} しました`, true, res.missed);
     else showToast('きろく していません', res.msg.replace(/出勤|退勤/g, t => KANA[t]), false);
   } catch (e) {
     showToast('エラー', String(e.message || e), false);
   }
 }
 
-function showToast(big, small, ok) {
+// missed：押し忘れ [{ date, type }]（記録はした）。いつ・どちらを添えて、赤い警告を長めに出す
+function showToast(big, small, ok, missed) {
+  const warn = !!(missed && missed.length);
   $('toastBig').textContent = big; $('toastSmall').textContent = small;
-  $('toast').className = ok ? '' : 'ng';
+  $('toastWhen').innerHTML = '';
+  if (warn) for (const m of missed) $('toastWhen').appendChild(document.createElement('div')).textContent = missedLabel(m);
+  $('toast').className = warn ? 'missed' : ok ? '' : 'ng';
   $('toast').style.display = 'flex';
   setTimeout(() => {
     $('toast').style.display = 'none';
     current = null; candidate = null;
     setWho('カメラに顔を向けてください', false);
     paused = false;
-  }, ok ? 2500 : 3500);
+  }, warn ? 8000 : ok ? 2500 : 3500);
+}
+
+// 押し忘れの「いつ・どちら」をひらがなで（例：きのう（11がつ11にち）の たいきん）
+function missedLabel(m) {
+  const [y, mo, d] = m.date.split('/').map(Number);
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(y, mo - 1, d)) / 864e5);
+  const date = `${mo}がつ${d}にち`;
+  const when = days === 0 ? `きょう（${date}）` : days === 1 ? `きのう（${date}）` : date;
+  return `${when}の ${m.type === '順番' ? 'しゅっきん・たいきん' : KANA[m.type]}`;
 }
 
 // ---------- 表示 ----------
