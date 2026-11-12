@@ -36,6 +36,16 @@
   .bal { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; padding: 8px 12px; border-radius: 8px; background: #f1f5fb; margin-top: 6px; }
   .bal .big { font-size: 20px; font-weight: 700; color: var(--accent); }
   .bal .note { font-size: 13px; color: var(--sub); }
+  details.fold { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; }
+  details.fold > summary { cursor: pointer; padding: 10px 14px; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary::before { content: '▶'; font-size: 12px; color: var(--sub); transition: transform .15s; }
+  details.fold[open] > summary::before { transform: rotate(90deg); }
+  details.fold > summary .cnt { font-weight: 400; font-size: 14px; color: var(--sub); }
+  details.fold > .inner { padding: 0 14px 10px; }
+  details.fold > .inner > table { margin-top: 0; }
+  details.fold details.fold { margin-top: 8px; }
+  details.fold details.fold > summary { padding: 8px 12px; }
 </style>
 </head>
 <body>
@@ -93,17 +103,20 @@
         <span style="color:var(--sub);font-size:14px">の使った日数</span>
       </div>
       <div class="bar" id="lvSum" style="margin-top:8px"></div>
-      <table>
-        <thead><tr><th>日付</th><th>名前</th><th>種類</th><th>メモ</th><th></th></tr></thead>
-        <tbody id="lvRows"></tbody>
-      </table>
       <div id="lvMsg" class="msg"></div>
+      <details class="fold" id="lvFold">
+        <summary>有給の一覧 <span class="cnt" id="lvCount"></span></summary>
+        <div class="inner" id="lvRows"></div>
+      </details>
     </div>
 
     <div class="card">
       <h2>登録している人</h2>
       <div style="color:var(--sub);font-size:14px">顔の登録はカメラが要るので、iPadの「⚙ 管理」から行ってください。</div>
-      <table><tbody id="emps"></tbody></table>
+      <details class="fold" id="empFold">
+        <summary>登録している人の一覧 <span class="cnt" id="empCount"></span></summary>
+        <div class="inner"><table><tbody id="emps"></tbody></table></div>
+      </details>
     </div>
 
     <button class="gray" onclick="logout()">ログアウト（このPCに覚えた合言葉を消す）</button>
@@ -297,20 +310,38 @@ function renderLeaves() {
     const s = document.createElement('span'); s.className = 'sum'; s.textContent = `${e.name}：${d}日`;
     sum.appendChild(s);
   }
-  const tb = $('lvRows'); tb.innerHTML = '';
-  if (!leaves.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">この年の有給はありません</td></tr>'; return; }
-  for (const l of leaves) {
-    const tr = document.createElement('tr');
-    const c = [0, 1, 2, 3, 4].map(() => tr.appendChild(document.createElement('td')));
-    const dt = new Date(l.date.replace(/\//g, '-') + 'T00:00');
-    c[0].textContent = `${dt.getMonth() + 1}/${dt.getDate()}（${'日月火水木金土'[dt.getDay()]}）`;
-    c[1].textContent = l.name; c[2].textContent = l.kind;
-    c[3].className = 'note'; c[3].textContent = l.memo;
-    const del = document.createElement('button'); del.className = 'red'; del.textContent = '削除'; c[4].style.textAlign = 'right'; c[4].appendChild(del);
-    del.onclick = () => { if (confirm(`${l.name} さんの ${l.date} の有給を消しますか？`)) lvAction('deleteLeave', l.row, l.ts, String(lvYear)); };
-    tb.appendChild(tr);
+  const box = $('lvRows'); box.innerHTML = '';
+  $('lvCount').textContent = `（${lvYear}年 ${leaves.length}件）`;
+  if (!leaves.length) { box.innerHTML = '<div class="empty">この年の有給はありません</div>'; return; }
+  // 人ごとに折りたたむ（開いていた人は開いたまま）
+  const names = [...new Set(leaves.map(l => l.name))];
+  for (const name of names) {
+    const list = leaves.filter(l => l.name === name);
+    const days = list.reduce((s, l) => s + l.days, 0);
+    const det = document.createElement('details'); det.className = 'fold';
+    det.open = openLeaveNames.has(name);
+    det.ontoggle = () => { det.open ? openLeaveNames.add(name) : openLeaveNames.delete(name); };
+    const sm = document.createElement('summary'); sm.textContent = name + ' ';
+    const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.textContent = `（${list.length}件・${days}日）`; sm.appendChild(cnt);
+    const inner = document.createElement('div'); inner.className = 'inner';
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>日付</th><th>種類</th><th>メモ</th><th></th></tr></thead>';
+    const tb = table.appendChild(document.createElement('tbody'));
+    for (const l of list) {
+      const tr = document.createElement('tr');
+      const c = [0, 1, 2, 3].map(() => tr.appendChild(document.createElement('td')));
+      const dt = new Date(l.date.replace(/\//g, '-') + 'T00:00');
+      c[0].textContent = `${dt.getMonth() + 1}/${dt.getDate()}（${'日月火水木金土'[dt.getDay()]}）`;
+      c[1].textContent = l.kind;
+      c[2].className = 'note'; c[2].textContent = l.memo;
+      const del = document.createElement('button'); del.className = 'red'; del.textContent = '削除'; c[3].style.textAlign = 'right'; c[3].appendChild(del);
+      del.onclick = () => { if (confirm(`${l.name} さんの ${l.date} の有給を消しますか？`)) lvAction('deleteLeave', l.row, l.ts, String(lvYear)); };
+      tb.appendChild(tr);
+    }
+    inner.appendChild(table); det.append(sm, inner); box.appendChild(det);
   }
 }
+const openLeaveNames = new Set();
 
 async function lvAction(fn, ...args) {
   lvMsg('保存しています…');
@@ -337,6 +368,7 @@ function setEmployees(list) {
   }
   if (leaves.length) renderLeaves();
   const tb = $('emps'); tb.innerHTML = '';
+  $('empCount').textContent = `（${employees.length}人）`;
   if (!employees.length) { tb.innerHTML = '<tr><td class="empty">まだいません</td></tr>'; return; }
   for (const e of employees) {
     const tr = document.createElement('tr');
