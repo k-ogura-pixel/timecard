@@ -33,6 +33,9 @@
   #login { max-width: 420px; margin: 60px auto; }
   #login input { width: 100%; margin: 6px 0 14px; }
   .empty { color: var(--sub); padding: 10px 0; }
+  .bal { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; padding: 8px 12px; border-radius: 8px; background: #f1f5fb; margin-top: 6px; }
+  .bal .big { font-size: 20px; font-weight: 700; color: var(--accent); }
+  .bal .note { font-size: 13px; color: var(--sub); }
 </style>
 </head>
 <body>
@@ -73,6 +76,8 @@
 
     <div class="card">
       <h2>有給</h2>
+      <div style="color:var(--sub);font-size:14px">今日の時点の残り（「社員」シートE列に入社日がある人だけ）</div>
+      <div id="lvBal" style="margin:6px 0 16px"></div>
       <div class="bar">
         <b>入れる：</b>
         <select id="lvEmp"></select>
@@ -148,6 +153,8 @@ const mock = (() => {
       return this.getLeaves(p, lv.date.slice(0, 4));
     },
     deleteLeave(p, row, ts, year) { leaves.splice(row - 2, 1); return this.getLeaves(p, year); },
+    getLeaveBalances: () => [{ id: '1', name: 'テスト太郎', hire: '2025/11/05', used: 8.5, remain: 1.5, next: { date: '2027/05/05', days: 11 }, expire: [{ date: '2028/05/05', days: 1.5 }] },
+                             { id: '2', name: 'テスト花子', hire: '', used: 0 }],
     deleteEmployee(p, id) { emps = emps.filter(x => x.id !== id); return emps; }
   };
 })();
@@ -253,8 +260,34 @@ function moveYear(n) { lvYear += n; loadLeaves(); }
 async function loadLeaves() {
   $('lvYearLabel').textContent = lvYear + '年';
   lvMsg('読み込んでいます…');
-  try { leaves = await server('getLeaves', pin, String(lvYear)); renderLeaves(); lvMsg(''); }
+  try { leaves = await server('getLeaves', pin, String(lvYear)); renderLeaves(); lvMsg(''); loadBalances(); }
   catch (e) { lvMsg('エラー：' + (e.message || e), true); }
+}
+
+// 有給の残り（入社日がある人だけ）
+async function loadBalances() {
+  try { renderBalances(await server('getLeaveBalances', pin)); }
+  catch (e) { $('lvBal').textContent = '残りを読めませんでした：' + (e.message || e); }
+}
+
+function renderBalances(list) {
+  const box = $('lvBal'); box.innerHTML = '';
+  const md = s => { const p = s.split('/').map(Number); return `${p[0]}/${p[1]}/${p[2]}`; };
+  const rows = list.filter(b => b.hire);
+  if (!rows.length) { box.innerHTML = '<span class="empty">入社日が入っている人がいません</span>'; return; }
+  for (const b of rows) {
+    const div = document.createElement('div'); div.className = 'bal';
+    const left = b.remain < 0 ? `前倒し ${-b.remain}日（まだもらっていない）` : `残り ${b.remain}日`;
+    const parts = [`入社 ${md(b.hire)}`, `これまでに使った ${b.used}日`];
+    if (b.expire && b.expire.length) parts.push(b.expire.map(x => `${x.days}日は ${md(x.date)} で消える`).join('・'));
+    if (b.next) parts.push(`次は ${md(b.next.date)} に ${b.next.days}日`);
+    div.innerHTML = `<b></b><span class="big"></span><span class="note"></span>`;
+    div.children[0].textContent = b.name;
+    div.children[1].textContent = left;
+    if (b.remain < 0) div.children[1].style.color = 'var(--ng)';
+    div.children[2].textContent = parts.join('　/　');
+    box.appendChild(div);
+  }
 }
 
 function renderLeaves() {
@@ -281,7 +314,7 @@ function renderLeaves() {
 
 async function lvAction(fn, ...args) {
   lvMsg('保存しています…');
-  try { leaves = await server(fn, pin, ...args); renderLeaves(); lvMsg(fn === 'deleteLeave' ? '消しました' : '入れました'); }
+  try { leaves = await server(fn, pin, ...args); renderLeaves(); lvMsg(fn === 'deleteLeave' ? '消しました' : '入れました'); loadBalances(); }
   catch (e) { lvMsg('エラー：' + (e.message || e), true); }
 }
 
